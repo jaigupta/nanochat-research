@@ -66,7 +66,10 @@ model_tag = ""  # optionally override the model tag for the output checkpoint di
 config_keys = [k for k, v in globals().items() if not k.startswith(
     '_') and isinstance(v, (int, float, bool, str))]
 # overrides from command line or config file
-exec(open(os.path.join('nanochat', 'configurator.py')).read())
+configurator_path = os.path.join('nanochat', 'configurator.py')
+if not os.path.exists(configurator_path):
+    configurator_path = os.path.join('nanochat_research', configurator_path)
+exec(open(configurator_path).read())
 user_config = {k: globals()[k]
                for k in config_keys}  # will be useful for logging
 # -----------------------------------------------------------------------------
