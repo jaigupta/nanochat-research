@@ -7,6 +7,7 @@ import re
 import logging
 import torch
 import torch.distributed as dist
+from torch.utils.tensorboard import SummaryWriter
 
 class ColoredFormatter(logging.Formatter):
     """Custom formatter that adds colors to log messages."""
@@ -153,3 +154,19 @@ class DummyWandb:
         pass
     def finish(self):
         pass
+
+
+class TBLogger:
+    def __init__(self, run: str):
+        self._writer = SummaryWriter(os.path.join(get_base_dir(), 'runs', run, 'summary'))
+
+    def log(self, scalar_dict: dict[str, float|int]):
+        assert 'step' in scalar_dict
+        step = scalar_dict['step']
+        del scalar_dict['step']
+        for k, v in scalar_dict.items():
+            self._writer.add_scalar(k, v, step)
+        self._writer.flush()
+    
+    def finish(self):
+        self._writer.close()

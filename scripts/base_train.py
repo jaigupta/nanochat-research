@@ -16,7 +16,7 @@ import wandb
 import torch
 from nanochat.gpt import GPT, GPTConfig
 from nanochat.dataloader import tokenizing_distributed_data_loader
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
+from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type, TBLogger
 from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.loss_eval import evaluate_bpb
@@ -69,7 +69,10 @@ get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else l
 
 # wandb logging init
 use_dummy_wandb = run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=run, config=user_config)
+use_tensorboard = True
+wandb_run = DummyWandb() if use_dummy_wandb else (
+    TBLogger(run) if use_tensorboard else
+    wandb.init(project="nanochat", name=run, config=user_config))
 
 # Tokenizer will be useful for evaluation, also we need the vocab size
 tokenizer = get_tokenizer()
@@ -136,6 +139,7 @@ adamw_optimizer, muon_optimizer = optimizers
 
 # Initialize the DataLoaders for train/val
 base_dir = get_base_dir()
+run_dir = os.path.join(base_dir, 'runs', run)
 tokens_dir = os.path.join(base_dir, "tokenized_data")
 train_loader = tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="train", device=device)
 build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
@@ -233,7 +237,7 @@ for step in range(num_iterations + 1):
     # save checkpoint at the end of the run (only on master process)
     if master_process and last_step:
         output_dirname = model_tag if model_tag else f"d{depth}" # e.g. d12
-        checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
+        checkpoint_dir = os.path.join(run_dir, "base_checkpoints", output_dirname)
         save_checkpoint(
             checkpoint_dir,
             step,
