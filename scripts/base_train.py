@@ -11,25 +11,22 @@ torchrun --nproc_per_node=8 base_train.py
 import sys
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-# update sys path before starting imports from nanochat.
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-# Needed to prevent formatter from moving everything up.
-if True:
-    import time
-    import wandb
-    import torch
+import time
+import wandb
+import torch
 
-    from nanochat.gpt import GPT, GPTConfig
-    from nanochat.dataloader import tokenizing_distributed_data_loader
-    from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir
-    from nanochat.tokenizer import get_tokenizer, get_token_bytes
-    from nanochat.checkpoint_manager import save_checkpoint
-    from nanochat.loss_eval import evaluate_bpb
-    from nanochat.engine import Engine
-    from nanochat.report import get_report
-    from scripts.base_eval import evaluate_model
-    print_banner()
+from nanochat.gpt import GPT, GPTConfig
+from nanochat.dataloader import tokenizing_distributed_data_loader
+from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, get_runs_dir
+from nanochat.tokenizer import get_tokenizer, get_token_bytes
+from nanochat.checkpoint_manager import save_checkpoint
+from nanochat.loss_eval import evaluate_bpb
+from nanochat.engine import Engine
+from nanochat.report import get_report
+from scripts.base_eval import evaluate_model
+from torch.utils.tensorboard import SummaryWriter
+print_banner()
 
 # -----------------------------------------------------------------------------
 # User settings
@@ -81,9 +78,9 @@ master_process = ddp_rank == 0
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
 
 # wandb logging init
-use_dummy_wandb = run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(
-    project="nanochat", name=run, config=user_config)
+run_dir = get_runs_dir()
+init_logger = run != "dummy" and master_process
+logger =  SummaryWriter(os.path.join(run_dir, 'summary')) if init_logger else None
 
 # Tokenizer will be useful for evaluation, also we need the vocab size
 tokenizer = get_tokenizer()
@@ -207,6 +204,15 @@ def get_muon_momentum(it):
     momentum = (1 - frac) * 0.85 + frac * 0.95
     return momentum
 
+def log_metrics(scalar_dict, step):
+    if logger is None:
+        return
+    for k, v in scalar_dict.items():
+        if k == step:
+            continue
+        logger.add_scalar(k, v, step)
+    logger.flush()
+
 
 # -----------------------------------------------------------------------------
 # Training loop
@@ -230,12 +236,12 @@ for step in range(num_iterations + 1):
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
-        wandb_run.log({
+        log_metrics({
             "step": step,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
             "val/bpb": val_bpb,
-        })
+        }, step)
         model.train()
 
     # once in a while: estimate the CORE metric (all ranks participate)
@@ -246,12 +252,12 @@ for step in range(num_iterations + 1):
             results = evaluate_model(
                 orig_model, tokenizer, device, max_per_task=core_metric_max_per_task)
         print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
-        wandb_run.log({
+        log_metrics({
             "step": step,
             "total_training_flops": flops_so_far,
             "core_metric": results["core_metric"],
             "centered_results": results["centered_results"],
-        })
+        }, step)
         model.train()
 
     # once in a while: sample from the model (only on master process)
@@ -280,7 +286,7 @@ for step in range(num_iterations + 1):
     if master_process and last_step:
         output_dirname = model_tag if model_tag else f"d{depth}"  # e.g. d12
         checkpoint_dir = os.path.join(
-            base_dir, "base_checkpoints", output_dirname)
+            run_dir, "base_checkpoints", output_dirname)
         save_checkpoint(
             checkpoint_dir,
             step,
@@ -348,7 +354,7 @@ for step in range(num_iterations + 1):
         total_training_time += dt  # only count the time after the first 10 steps
     print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | total time: {total_training_time/60:.2f}m")
     if step % 100 == 0:
-        wandb_run.log({
+        log_metrics({
             "step": step,
             "total_training_flops": flops_so_far,
             "total_training_time": total_training_time,
@@ -357,7 +363,7 @@ for step in range(num_iterations + 1):
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,
             "train/mfu": mfu,
-        })
+        }, step)
 
 # print a few more stats
 print0(
@@ -391,5 +397,6 @@ get_report().log(section="Base model training", data=[
 ])
 
 # cleanup
-wandb_run.finish()  # wandb run finish
+if logger is not None:
+    logger.close()
 compute_cleanup()

@@ -56,6 +56,11 @@ def get_base_dir():
     os.makedirs(nanochat_dir, exist_ok=True)
     return nanochat_dir
 
+def get_runs_dir():
+    run_name = os.environ.get('RUN_NAME')
+    assert run_name
+    return os.path.join(get_base_dir(), 'runs', run_name)
+
 def print0(s="",**kwargs):
     ddp_rank = int(os.environ.get('RANK', 0))
     if ddp_rank == 0:
