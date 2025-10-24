@@ -6,3 +6,5 @@ dev-ignore/
 *nogit*
 Dockerfile
 entrypoint.sh
+report.md
+eval_bundle/
